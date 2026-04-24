@@ -1,0 +1,121 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Online Mahjong</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>Online Mahjong</h1>
+<div id="login" class="panel"><input id="name" placeholder="Your name"><input id="room" placeholder="Room code" value="ROOM"><div><button onclick="setPlayerCount(2)">2 Players</button><button onclick="setPlayerCount(3)">3 Players</button><button onclick="setPlayerCount(4)">4 Players</button></div><p id="playerCountText">Selected: 4 Players</p><button onclick="joinRoom()">Join Room</button></div>
+<div id="main" style="display:none">
+  <div class="topbar"><button onclick="startGame()">Start Game</button><button onclick="newRound()">Start New Round</button><button onclick="endGameManual()">End Game</button><button onclick="resetRoom()">Reset Room</button></div>
+  <div id="status"></div><div id="scoreBoard" class="panel"></div>
+  <h3>Last Discard / 上家打出的牌</h3><div id="lastDiscard" class="tile big"></div>
+  <div id="players" class="players"></div>
+  <h2>Your Hand</h2><div id="hand"></div>
+  <h3>Your Flowers</h3><div id="flowers"></div>
+  <h3>Your Melds</h3><div id="melds"></div>
+  <h2>Discard Area</h2><div id="discards"></div>
+</div>
+<div id="actionPopup" class="popup"><div id="actionInfo"></div><div id="chiCombos"></div><button id="btnWin" onclick="chooseAction('win')">胡啦</button><button id="btnGang" onclick="chooseAction('gang')">杠</button><button id="btnPong" onclick="chooseAction('pong')">碰</button><button id="btnChi" onclick="chooseAction('chi')">吃</button><button onclick="chooseAction('pass')">过</button></div>
+<div id="scoreScreen" class="scoreScreen"><h2>Game Result</h2><div id="scoreDetails"></div><button onclick="closeScore()">Close</button></div>
+<script src="/socket.io/socket.io.js"></script><script src="script.js"></script>
+</body></html>
+
+const socket = io();
+let selectedPlayerCount = 4;
+let myIndex = null;
+let state = null;
+let currentActionData = null;
+let selectedChiCombo = null;
+function setPlayerCount(n){selectedPlayerCount=n;document.getElementById('playerCountText').innerText=`Selected: ${n} Players`;}
+function joinRoom(){socket.emit('joinRoom',{name:document.getElementById('name').value,roomCode:document.getElementById('room').value,playerCount:selectedPlayerCount});}
+function startGame(){socket.emit('startGame');}
+function newRound(){socket.emit('newRound');closeScore();}
+function endGameManual(){socket.emit('endGameManual');}
+function resetRoom(){socket.emit('resetRoom');closeScore();}
+socket.on('joined',d=>{myIndex=d.playerIndex;document.getElementById('login').style.display='none';document.getElementById('main').style.display='block';});
+socket.on('errorMessage',msg=>alert(msg));
+socket.on('state',s=>{state=s;render();});
+socket.on('showActions',data=>{currentActionData=data;selectedChiCombo=null;showActions(data);});
+socket.on('gameOver',data=>showScore(data));
+function getTileClass(tile){const n=tile.name||tile;if(n==='暗')return 'back';if(n.includes('万'))return 'wan';if(n.includes('条'))return 'tiao';if(n.includes('筒'))return 'tong';if(['东','南','西','北'].includes(n))return 'wind';if(n==='中')return 'zhong';if(n==='发')return 'fa';if(n==='白')return 'bai';if(['渔','樵','耕','读','琴','棋','书','画','梅','兰','竹','菊','春','夏','秋','冬'].includes(n))return 'flower';return '';}
+function tileEl(tile, extra=''){const d=document.createElement('div');d.className=`tile ${getTileClass(tile)} ${extra}`;d.innerText=tile.name||tile;return d;}
+function render(){
+ if(!state||myIndex===null)return;
+ document.getElementById('status').innerText = state.started ? ('Room '+state.roomCode+' | Tiles left: '+state.wallCount+' | Current turn: Player '+(state.currentTurn+1)) : ('Waiting room '+state.roomCode+' ('+state.players.length+'/'+state.maxPlayers+')');
+ const score=document.getElementById('scoreBoard');
+ score.innerHTML='<h3>Scores</h3>'+state.players.map((p,i)=>'Player '+(i+1)+' '+p.name+': '+(state.scores[i]||0)).join(' | ');
+ const last=document.getElementById('lastDiscard');
+ last.innerHTML='';
+ if(state.lastDiscard) last.appendChild(tileEl(state.lastDiscard,'big'));
+ const ps=document.getElementById('players');
+ ps.innerHTML='';
+ state.players.forEach((p,i)=>{
+   const div=document.createElement('div');
+   div.className='player '+(i===state.currentTurn?'current':'');
+   const head=document.createElement('div');
+   head.innerHTML='<b>Player '+(i+1)+': '+p.name+'</b><br>'+(p.connected?'Online':'Offline')+'<br>Hand: '+p.handCount+' tiles<br>Flowers: '+p.flowers.length;
+   div.appendChild(head);
+   const meldTitle=document.createElement('div');
+   meldTitle.className='miniTitle';
+   meldTitle.innerText='Opened sets / 已开牌';
+   div.appendChild(meldTitle);
+   const meldBox=document.createElement('div');
+   meldBox.className='playerMelds';
+   if(p.melds && p.melds.length){
+     p.melds.forEach(m=>{
+       const box=document.createElement('span');
+       box.className='meld smallMeld';
+       box.append(m.type+': ');
+       m.tiles.forEach(t=>box.appendChild(tileEl(t,'smallTile')));
+       meldBox.appendChild(box);
+     });
+   } else {
+     meldBox.innerHTML='<span class="muted">None</span>';
+   }
+   div.appendChild(meldBox);
+   ps.appendChild(div);
+ });
+ const me=state.players[myIndex];
+ const hand=document.getElementById('hand');
+ hand.innerHTML='';
+ me.hand.forEach(t=>{
+   const el=tileEl(t,(t.id===me.newTileId?'newTile ':'')+(myIndex===state.currentTurn&&state.mustDiscard&&!state.gameOver?'clickable':''));
+   if(myIndex===state.currentTurn&&state.mustDiscard&&!state.gameOver) el.onclick=()=>socket.emit('discard',{tileId:t.id});
+   hand.appendChild(el);
+ });
+ renderTileList('flowers',me.flowers);
+ const melds=document.getElementById('melds');
+ melds.innerHTML='';
+ me.melds.forEach(m=>{
+   const box=document.createElement('span');
+   box.className='meld';
+   box.append(m.type+': ');
+   m.tiles.forEach(t=>box.appendChild(tileEl(t)));
+   melds.appendChild(box);
+ });
+ const disc=document.getElementById('discards');
+ disc.innerHTML='';
+ state.discards.forEach(x=>{
+   const e=tileEl(x.tile);
+   e.title='Player '+(x.from+1);
+   disc.appendChild(e);
+ });
+}
+function renderTileList(id,list){const c=document.getElementById(id);c.innerHTML='';list.forEach(t=>c.appendChild(tileEl(t)));}
+function showActions(data){const pop=document.getElementById('actionPopup');pop.style.display='block';document.getElementById('actionInfo').innerHTML=data.lastDiscard?`可选择操作。上家打出：<b>${data.lastDiscard.name}</b>`:(data.self?'你可以自摸/暗杠':'可选择操作');
+ setBtn('btnWin',!!data.win);setBtn('btnGang',!!data.gang);setBtn('btnPong',!!data.pong);setBtn('btnChi',!!data.chi);
+ const combos=document.getElementById('chiCombos');combos.innerHTML=''; if(data.chiCombos&&data.chiCombos.length){combos.innerHTML='<div>选择吃牌组合：</div>';data.chiCombos.forEach(c=>{const b=document.createElement('button');b.innerText=c.join(' + ');b.onclick=()=>{selectedChiCombo=c;Array.from(combos.querySelectorAll('button')).forEach(x=>x.style.outline='');b.style.outline='3px solid orange';};combos.appendChild(b);});}
+ if(data.concealedGangs&&data.concealedGangs.length){combos.innerHTML='<div>选择暗杠：</div>';data.concealedGangs.forEach(n=>{const b=document.createElement('button');b.innerText=n;b.onclick=()=>{selectedChiCombo=n;chooseAction('concealedGang');};combos.appendChild(b);});}
+}
+function setBtn(id,show){document.getElementById(id).style.display=show?'inline-block':'none';}
+function chooseAction(action){if(action==='win'&&currentActionData&&currentActionData.self) action='selfWin'; if(action==='gang'&&currentActionData&&currentActionData.self){ if(currentActionData.concealedGangs&&currentActionData.concealedGangs.length===1){selectedChiCombo=currentActionData.concealedGangs[0]; action='concealedGang';}}
+ if(action==='chi'&&currentActionData&&currentActionData.chiCombos&&currentActionData.chiCombos.length>1&&!selectedChiCombo){alert('Please choose chi combination first.');return;}
+ socket.emit('action',{action,combo:selectedChiCombo});document.getElementById('actionPopup').style.display='none';}
+function showScore(data){const screen=document.getElementById('scoreScreen');const detail=document.getElementById('scoreDetails');screen.style.display='block';detail.innerHTML=''; if(data.manual){detail.innerHTML='<p>Game manually ended.</p>';} else {detail.innerHTML+=`<p><b>Winner:</b> Player ${data.winner+1} ${data.players[data.winner]} (${data.type==='self'?'自摸':'胡牌'})</p>`;}
+ data.scores.forEach((s,i)=>{const ch=data.changes[i]||0;const div=document.createElement('div');div.innerHTML=`Player ${i+1} ${data.players[i]}: <b>${s}</b> <span class="${ch>=0?'positive':'negative'}">(${ch>=0?'+':''}${ch})</span>`;detail.appendChild(div);});}
+function closeScore(){document.getElementById('scoreScreen').style.display='none';}
+
+body{font-family:Arial,"Microsoft YaHei",sans-serif;background:#0f6b3f;color:#fff;text-align:center;padding-bottom:140px}button{padding:9px 15px;margin:5px;border:0;border-radius:8px;cursor:pointer;font-weight:bold}input{padding:10px;margin:5px;border-radius:8px;border:1px solid #ccc}.panel{background:rgba(255,255,255,.12);padding:12px;margin:10px auto;border-radius:12px;max-width:850px}.topbar{position:sticky;top:0;background:#0f6b3f;padding:10px;z-index:10}.players{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;max-width:900px;margin:10px auto}.player{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);border-radius:12px;padding:10px}.current{outline:3px solid #ffe082}.tile{width:46px;height:66px;background:#fffdf2;border:2px solid #222;border-radius:8px;box-shadow:0 5px 0 #c9c9c9;display:inline-flex;align-items:center;justify-content:center;margin:5px;font-size:20px;font-weight:bold;vertical-align:top;color:#111}.tile.big{width:64px;height:92px;font-size:28px;margin:10px auto}.tile.clickable{cursor:pointer}.tile.clickable:hover{transform:translateY(-4px);background:#fff7cf}.newTile{background:#ffe082!important;border-color:#ff9800!important}.wan,.zhong{color:#d32f2f}.tiao,.fa{color:#2e7d32}.tong{color:#0b2c78}.wind{color:#000}.bai{color:#fff;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000}.flower{color:#8e24aa}.meld{display:inline-block;background:rgba(255,255,255,.18);padding:5px;margin:4px;border-radius:8px}.popup{display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#fff;color:#111;border:2px solid #222;border-radius:14px;padding:14px 18px;box-shadow:0 4px 20px rgba(0,0,0,.35);z-index:999;min-width:300px}.popup button{font-size:18px}.scoreScreen{display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;color:#111;padding:22px;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.45);z-index:1000;min-width:330px}#chiCombos button{background:#e3f2fd}#status{font-size:18px;font-weight:bold;margin:10px}#hand,#discards,#flowers,#melds{max-width:1000px;margin:auto;min-height:70px}.positive{color:#2e7d32}.negative{color:#d32f2f}
+.tile.back{background:#1f4f9a;color:#1f4f9a;border-color:#0b2c78;box-shadow:0 5px 0 #12325f;position:relative}
+.tile.back::after{content:"";width:24px;height:38px;border:2px solid rgba(255,255,255,.65);border-radius:6px;display:block}
+.smallTile{width:28px;height:40px;font-size:13px;margin:2px;border-radius:5px;box-shadow:0 3px 0 #c9c9c9}.playerMelds{margin-top:5px;min-height:45px}.smallMeld{font-size:12px;padding:4px;background:rgba(255,255,255,.22)}.miniTitle{font-size:12px;font-weight:bold;margin-top:6px;color:#ffe082}.muted{opacity:.7;font-size:12px}
+.tile.back{background:#1f4f9a;color:#1f4f9a;border-color:#0b2c78;box-shadow:0 5px 0 #12325f;position:relative}
+.tile.back::after{content:"";width:24px;height:38px;border:2px solid rgba(255,255,255,.65);border-radius:6px;display:block}.smallTile{width:28px;height:40px;font-size:13px;margin:2px;border-radius:5px;box-shadow:0 3px 0 #c9c9c9}.playerMelds{margin-top:5px;min-height:45px}.smallMeld{font-size:12px;padding:4px;background:rgba(255,255,255,.22)}.miniTitle{font-size:12px;font-weight:bold;margin-top:6px;color:#ffe082}.muted{opacity:.7;font-size:12px}
+.tile.back{background:#1f4f9a;color:#1f4f9a;border-color:#0b2c78;box-shadow:0 5px 0 #12325f;position:relative}
+.tile.back::after{content:"";width:24px;height:38px;border:2px solid rgba(255,255,255,.65);border-radius:6px;display:block}.smallTile{width:28px;height:40px;font-size:13px;margin:2px;border-radius:5px;box-shadow:0 3px 0 #c9c9c9}.playerMelds{margin-top:5px;min-height:45px}.smallMeld{font-size:12px;padding:4px;background:rgba(255,255,255,.22)}.miniTitle{font-size:12px;font-weight:bold;margin-top:6px;color:#ffe082}.muted{opacity:.7;font-size:12px}
